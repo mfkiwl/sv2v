@@ -31,6 +31,8 @@ module top;
         type({x, y}) b = {x, y};
         type(FLAG ? x : y) c = FLAG ? x : y;
         type(!FLAG ? x : y) d = !FLAG ? x : y;
+        type($clog2(x)) e = $clog2(x);
+        type(!e) f = !e;
         $display("%b %d %d", x, $left(x), $right(x));
         $display("%b %d %d", y, $left(y), $right(y));
         $display("%b %d %d", z, $left(z), $right(z));
@@ -38,6 +40,8 @@ module top;
         $display("%b %d %d", b, $left(b), $right(b));
         $display("%b %d %d", c, $left(c), $right(c));
         $display("%b %d %d", d, $left(d), $right(d));
+        $display("%b %d %d", e, $left(e), $right(e));
+        $display("%b %d", f, $bits(f));
     end
 
     parameter W = 4;
@@ -70,4 +74,15 @@ module top;
             $display("%b %d %d %d", i, i, $left(i), $right(i));
             $display("%b %d %d %d", a, a, $left(a), $right(a));
         end
+
+    localparam X = 5'b10110;
+    localparam Y = X + 6'b00001;
+    initial begin
+        type(X) tX = X;
+        type(Y) tY = Y;
+        $display("%b %d %d %d", X, X, $left(X), $right(X));
+        $display("%b %d %d %d", Y, Y, $left(Y), $right(Y));
+        $display("%b %d %d %d", tX, tX, $left(tX), $right(tX));
+        $display("%b %d %d %d", tY, tY, $left(tY), $right(tY));
+    end
 endmodule

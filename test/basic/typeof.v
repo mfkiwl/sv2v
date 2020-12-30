@@ -33,6 +33,8 @@ module top;
         reg [31:0] a;
         reg [7:0] b;
         reg [3:0] c, d;
+        integer e;
+        reg f;
         x = 4'b1011;
         y = x ^ 3'b111;
         z = x ^ 5'b11111;
@@ -40,6 +42,8 @@ module top;
         b = {x, y};
         c = FLAG ? x : y;
         d = !FLAG ? x : y;
+        e = $clog2(x);
+        f = !e;
         $display("%b %d %d", x, 4, 1);
         $display("%b %d %d", y, 3, 0);
         $display("%b %d %d", z, 4, 0);
@@ -47,6 +51,8 @@ module top;
         $display("%b %d %d", b, 7, 0);
         $display("%b %d %d", c, 3, 0);
         $display("%b %d %d", d, 3, 0);
+        $display("%b %d %d", e, 31, 0);
+        $display("%b %d", f, 1);
     end
 
     parameter W = 4;
@@ -85,4 +91,17 @@ module top;
                 $display("%b %d %d %d", a, a, 31, 0);
             end
     endgenerate
+
+    localparam X = 5'b10110;
+    localparam Y = X + 6'b00001;
+    initial begin : block5
+        reg [4:0] tX;
+        reg [5:0] tY;
+        tX = X;
+        tY = Y;
+        $display("%b %d %d %d", X, X, 4, 0);
+        $display("%b %d %d %d", Y, Y, 5, 0);
+        $display("%b %d %d %d", tX, tX, 4, 0);
+        $display("%b %d %d %d", tY, tY, 5, 0);
+    end
 endmodule

@@ -1,7 +1,7 @@
 cabal-version: 2.4
 
 name: sv2v
-version: 0.0.5
+version: 0.0.6
 synopsis: SystemVerilog to Verilog conversion
 description:
   A tool for coverting SystemVerilog to Verilog. Originally forked from the
@@ -29,9 +29,10 @@ executable sv2v
     , containers
     , directory
     , filepath
-    , githash >= 0.1.4.0
+    , githash
     , hashable
     , mtl
+    , vector
   other-modules:
     -- SystemVerilog modules
     Language.SystemVerilog
@@ -70,6 +71,7 @@ executable sv2v
     Convert.Foreach
     Convert.FuncRet
     Convert.FuncRoutine
+    Convert.ImplicitNet
     Convert.Inside
     Convert.Interface
     Convert.IntTypes
@@ -89,6 +91,7 @@ executable sv2v
     Convert.SizeCast
     Convert.StarPort
     Convert.Stream
+    Convert.StringParam
     Convert.Struct
     Convert.TFBlock
     Convert.Traverse

@@ -36,6 +36,7 @@ simplifyStep (UniOp LogNot (BinOp Ne a b)) = BinOp Eq a b
 simplifyStep (UniOp UniSub (UniOp UniSub e)) = e
 simplifyStep (UniOp UniSub (BinOp Sub e1 e2)) = BinOp Sub e2 e1
 
+simplifyStep (e @ (Concat [Pattern{}])) = e
 simplifyStep (Concat [e]) = e
 simplifyStep (Concat es) = Concat $ filter (/= Concat []) es
 simplifyStep (Repeat (Dec 0) _) = Concat []
@@ -74,6 +75,8 @@ simplifyBinOp Add (UniOp UniSub e1) e2 = BinOp Sub e2 e1
 simplifyBinOp Sub e1 (UniOp UniSub e2) = BinOp Add e1 e2
 simplifyBinOp Sub (UniOp UniSub e1) e2 = UniOp UniSub $ BinOp Add e1 e2
 
+simplifyBinOp Add (BinOp Add e (n1 @ Number{})) (n2 @ Number{}) =
+    BinOp Add e (BinOp Add n1 n2)
 simplifyBinOp Sub (n1 @ Number{}) (BinOp Sub (n2 @ Number{}) e) =
     BinOp Add (BinOp Sub n1 n2) e
 simplifyBinOp Sub (n1 @ Number{}) (BinOp Sub e (n2 @ Number{})) =
@@ -178,6 +181,7 @@ rangeSizeHiLo (hi, lo) =
 -- chooses one or the other expression based on the endianness of the given
 -- range; [hi:lo] chooses the first expression
 endianCondExpr :: Range -> Expr -> Expr -> Expr
+endianCondExpr SizedRange{} e _ = e
 endianCondExpr r e1 e2 = simplify $ Mux (uncurry (BinOp Ge) r) e1 e2
 
 -- chooses one or the other range based on the endianness of the given range,
@@ -197,3 +201,8 @@ dimensionsSize ranges =
     foldl (BinOp Mul) (RawNum 1) $
     map rangeSize $
     ranges
+
+-- "sized ranges" are of the form [E-1:0], where E is any expression; in most
+-- designs, we can safely assume that E >= 1, allowing for more succinct output
+pattern SizedRange :: Expr -> Range
+pattern SizedRange expr = (BinOp Sub expr (RawNum 1), RawNum 0)

@@ -26,6 +26,7 @@ module Convert.Traverse
 , traverseExprsM
 , traverseExprs
 , collectExprsM
+, traverseNodesM
 , traverseStmtExprsM
 , traverseStmtExprs
 , collectStmtExprsM
@@ -84,13 +85,15 @@ module Convert.Traverse
 , traverseSinglyNestedExprsM
 , traverseSinglyNestedExprs
 , collectSinglyNestedExprsM
+, traverseLHSExprsM
+, traverseLHSExprs
+, collectLHSExprsM
 , traverseNestedLHSsM
 , traverseNestedLHSs
 , collectNestedLHSsM
 , traverseSinglyNestedLHSsM
 , traverseSinglyNestedLHSs
 , collectSinglyNestedLHSsM
-, traverseScopesM
 , traverseFilesM
 , traverseFiles
 , traverseSinglyNestedGenItemsM
@@ -98,8 +101,8 @@ module Convert.Traverse
 ) where
 
 import Data.Functor.Identity (Identity, runIdentity)
-import Control.Monad.State
-import Control.Monad.Writer
+import Control.Monad.State.Strict
+import Control.Monad.Writer.Strict
 import Language.SystemVerilog.AST
 
 type MapperM m t = t -> m t
@@ -117,7 +120,7 @@ unmonad traverser mapper = runIdentity . traverser (return . mapper)
 collectify :: Monad m => (MapperM m a -> MapperM m b) -> CollectorM m a -> CollectorM m b
 collectify traverser collector =
     traverser mapper >=> \_ -> return ()
-    where mapper x = collector x >> return x
+    where mapper x = collector x >>= \() -> return x
 
 traverseDescriptionsM :: Monad m => MapperM m Description -> MapperM m AST
 traverseDescriptionsM = mapM
@@ -504,6 +507,11 @@ traverseLHSExprsM exprMapper =
             return $ LHSStream o e' ls
         lhsMapper other = return other
 
+traverseLHSExprs :: Mapper Expr -> Mapper LHS
+traverseLHSExprs = unmonad traverseLHSExprsM
+collectLHSExprsM :: Monad m => CollectorM m Expr -> CollectorM m LHS
+collectLHSExprsM = collectify traverseLHSExprsM
+
 mapBothM :: Monad m => MapperM m t -> MapperM m (t, t)
 mapBothM mapper (a, b) = do
     a' <- mapper a
@@ -511,13 +519,30 @@ mapBothM mapper (a, b) = do
     return (a', b')
 
 traverseExprsM :: Monad m => MapperM m Expr -> MapperM m ModuleItem
-traverseExprsM exprMapper = moduleItemMapper
+traverseExprsM exprMapper =
+    traverseNodesM exprMapper declMapper typeMapper lhsMapper stmtMapper
     where
-
     declMapper = traverseDeclExprsM exprMapper
     typeMapper = traverseNestedTypesM (traverseTypeExprsM exprMapper)
     lhsMapper = traverseNestedLHSsM (traverseLHSExprsM exprMapper)
     stmtMapper = traverseNestedStmtsM (traverseStmtExprsM exprMapper)
+
+traverseExprs :: Mapper Expr -> Mapper ModuleItem
+traverseExprs = unmonad traverseExprsM
+collectExprsM :: Monad m => CollectorM m Expr -> CollectorM m ModuleItem
+collectExprsM = collectify traverseExprsM
+
+traverseNodesM
+    :: Monad m
+    => MapperM m Expr
+    -> MapperM m Decl
+    -> MapperM m Type
+    -> MapperM m LHS
+    -> MapperM m Stmt
+    -> MapperM m ModuleItem
+traverseNodesM exprMapper declMapper typeMapper lhsMapper stmtMapper =
+    moduleItemMapper
+    where
 
     portBindingMapper (p, e) =
         exprMapper e >>= \e' -> return (p, e')
@@ -597,15 +622,9 @@ traverseExprsM exprMapper = moduleItemMapper
 
     genItemMapper = traverseGenItemExprsM exprMapper
 
-    modportDeclMapper (dir, ident, t, e) = do
-        t' <- typeMapper t
+    modportDeclMapper (dir, ident, e) = do
         e' <- exprMapper e
-        return (dir, ident, t', e')
-
-traverseExprs :: Mapper Expr -> Mapper ModuleItem
-traverseExprs = unmonad traverseExprsM
-collectExprsM :: Monad m => CollectorM m Expr -> CollectorM m ModuleItem
-collectExprsM = collectify traverseExprsM
+        return (dir, ident, e')
 
 traverseStmtExprsM :: Monad m => MapperM m Expr -> MapperM m Stmt
 traverseStmtExprsM exprMapper = flatStmtMapper
@@ -942,11 +961,6 @@ traverseTypesM' strategy mapper =
                         then mapper t >>= \t' -> return (i, Left t')
                         else return (i, Left t)
                 mapParam (i, Right e) = return $ (i, Right e)
-        miMapper (Modport name decls) =
-            mapM mapModportDecl decls >>= return . Modport name
-            where
-                mapModportDecl (d, x, t, e) =
-                    mapper t >>= \t' -> return (d, x, t', e)
         miMapper other = return other
 
 traverseTypes' :: TypeStrategy -> Mapper Type -> Mapper ModuleItem
@@ -1079,70 +1093,6 @@ traverseNestedStmts :: Mapper Stmt -> Mapper Stmt
 traverseNestedStmts = unmonad traverseNestedStmtsM
 collectNestedStmtsM :: Monad m => CollectorM m Stmt -> CollectorM m Stmt
 collectNestedStmtsM = collectify traverseNestedStmtsM
-
--- Traverse all the declaration scopes within a ModuleItem. Note that Functions,
--- Tasks, Always/Initial/Final blocks are all NOT passed through ModuleItem
--- mapper, and Decl ModuleItems are NOT passed through the Decl mapper. The
--- state is restored to its previous value after each scope is exited. Only the
--- Decl mapper may modify the state, as we maintain the invariant that all other
--- functions restore the state on exit. The Stmt mapper must not traverse
--- statements recursively, as we add a recursive wrapper here.
-traverseScopesM
-    :: (Eq s, Show s)
-    => Monad m
-    => MapperM (StateT s m) Decl
-    -> MapperM (StateT s m) ModuleItem
-    -> MapperM (StateT s m) Stmt
-    -> MapperM (StateT s m) ModuleItem
-traverseScopesM declMapper moduleItemMapper stmtMapper =
-    fullModuleItemMapper
-    where
-
-        nestedStmtMapper =
-            stmtMapper >=> traverseSinglyNestedStmtsM fullStmtMapper
-        fullStmtMapper (Block kw name decls stmts) = do
-            prevState <- get
-            decls' <- mapM declMapper decls
-            block <- nestedStmtMapper $ Block kw name decls' stmts
-            put prevState
-            return block
-        fullStmtMapper other = nestedStmtMapper other
-
-        redirectModuleItem (MIPackageItem (Function ml t x decls stmts)) = do
-            prevState <- get
-            t' <- do
-                res <- declMapper $ Variable Local t x [] Nil
-                case res of
-                    Variable Local newType _ [] Nil -> return newType
-                    _ -> error $ "redirected func ret traverse failed: " ++ show res
-            decls' <- mapM declMapper decls
-            stmts' <- mapM fullStmtMapper stmts
-            put prevState
-            return $ MIPackageItem $ Function ml t' x decls' stmts'
-        redirectModuleItem (MIPackageItem (Task     ml   x decls stmts)) = do
-            prevState <- get
-            decls' <- mapM declMapper decls
-            stmts' <- mapM fullStmtMapper stmts
-            put prevState
-            return $ MIPackageItem $ Task     ml    x decls' stmts'
-        redirectModuleItem (AlwaysC kw stmt) =
-            fullStmtMapper stmt >>= return . AlwaysC kw
-        redirectModuleItem (Initial stmt) =
-            fullStmtMapper stmt >>= return . Initial
-        redirectModuleItem (Final stmt) =
-            fullStmtMapper stmt >>= return . Final
-        redirectModuleItem item =
-            moduleItemMapper item
-
-        -- This previously checked the invariant that the module item mappers
-        -- should not modify the state. Now we simply "enforce" it but resetting
-        -- the state to its previous value. Comparing the state, as we did
-        -- previously, incurs a noticeable performance hit.
-        fullModuleItemMapper item = do
-            prevState <- get
-            item' <- redirectModuleItem item
-            put prevState
-            return item'
 
 -- In many conversions, we want to resolve items locally first, and then fall
 -- back to looking at other source files, if necessary. This helper captures

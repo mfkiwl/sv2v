@@ -6,7 +6,7 @@ module Language.SystemVerilog.Parser
     ) where
 
 import Control.Monad.Except
-import Control.Monad.State
+import Control.Monad.State.Strict
 import qualified Data.Map.Strict as Map
 import Language.SystemVerilog.AST (AST)
 import Language.SystemVerilog.Parser.Lex (lexStr)
@@ -36,8 +36,7 @@ parseFile' includePaths env skipPreprocessor path = do
     let runner = if skipPreprocessor then annotate else preprocess
     preResult <- liftIO $ runner includePaths env path
     (contents, env') <- liftEither preResult
-    result <- liftIO $ uncurry lexStr $ unzip contents
-    tokens <- liftEither result
+    tokens <- liftEither $ uncurry lexStr $ unzip contents
     let position =
             if null tokens
                 then Position path 1 1

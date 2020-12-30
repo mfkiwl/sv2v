@@ -28,7 +28,7 @@ import Language.SystemVerilog.AST.Expr (Expr(Nil), pattern Ident, Range, showRan
 import Language.SystemVerilog.AST.GenItem (GenItem)
 import Language.SystemVerilog.AST.LHS (LHS)
 import Language.SystemVerilog.AST.Stmt (Stmt, AssertionItem, Timing(Delay))
-import Language.SystemVerilog.AST.Type (Type, Identifier, DriveStrength)
+import Language.SystemVerilog.AST.Type (Identifier, DriveStrength)
 
 data ModuleItem
     = MIAttr     Attr ModuleItem
@@ -54,7 +54,7 @@ instance Show ModuleItem where
     show (Assign    o a b) = printf "assign %s%s = %s;" (showPad o) (show a) (show b)
     show (Defparam    a b) = printf "defparam %s = %s;" (show a) (show b)
     show (Genvar      x  ) = printf "genvar %s;" x
-    show (Generate    b  ) = printf "generate\n%s\nendgenerate" (indent $ unlines' $ map show b)
+    show (Generate    b  ) = printf "generate\n%s\nendgenerate" (indent $ show b)
     show (Modport     x l) = printf "modport %s(\n%s\n);" x (indent $ intercalate ",\n" $ map showModportDecl l)
     show (Initial     s  ) = printf "initial %s" (show s)
     show (Final       s  ) = printf   "final %s" (show s)
@@ -90,14 +90,14 @@ showGate kw d x args =
         nameStr = showPad $ Ident x
 
 showModportDecl :: ModportDecl -> String
-showModportDecl (dir, ident, t, e) =
+showModportDecl (dir, ident, e) =
     if e == Ident ident
         then printf "%s %s" (show dir) ident
-        else printf "%s .%s(/* type: %s */ %s)" (show dir) ident (show t) (show e)
+        else printf "%s .%s(%s)" (show dir) ident (show e)
 
 type PortBinding = (Identifier, Expr)
 
-type ModportDecl = (Direction, Identifier, Type, Expr)
+type ModportDecl = (Direction, Identifier, Expr)
 
 data AlwaysKW
     = Always

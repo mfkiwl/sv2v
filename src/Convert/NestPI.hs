@@ -6,7 +6,7 @@
 
 module Convert.NestPI (convert, reorder) where
 
-import Control.Monad.Writer
+import Control.Monad.Writer.Strict
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -49,7 +49,7 @@ convertDescription pis (orig @ Part{}) =
         else Part attrs extern kw lifetime name ports items'
     where
         Part attrs extern kw lifetime name ports items = orig
-        items' = addItems pis Set.empty items
+        items' = addItems pis Set.empty (map addUsedPIs items)
 convertDescription _ other = other
 
 -- attempt to fix simple declaration order issues
@@ -57,7 +57,7 @@ reorderDescription :: Description -> Description
 reorderDescription (Part attrs extern kw lifetime name ports items) =
     Part attrs extern kw lifetime name ports items'
     where
-        items' = addItems localPIs Set.empty items
+        items' = addItems localPIs Set.empty (map addUsedPIs items)
         localPIs = Map.fromList $ mapMaybe toPIElem items
         toPIElem :: ModuleItem -> Maybe (Identifier, PackageItem)
         toPIElem (MIPackageItem item) = Just (piName item, item)
@@ -65,8 +65,8 @@ reorderDescription (Part attrs extern kw lifetime name ports items) =
 reorderDescription other = other
 
 -- iteratively inserts missing package items exactly where they are needed
-addItems :: PIs -> Idents -> [ModuleItem] -> [ModuleItem]
-addItems pis existingPIs (item : items) =
+addItems :: PIs -> Idents -> [(ModuleItem, Idents)] -> [ModuleItem]
+addItems pis existingPIs ((item, usedPIs) : items) =
     if not $ Set.disjoint existingPIs thisPI then
         -- this item was re-imported earlier in the module
         addItems pis existingPIs items
@@ -75,20 +75,24 @@ addItems pis existingPIs (item : items) =
         item : addItems pis (Set.union existingPIs thisPI) items
     else
         -- this item has at least one un-met dependency
-        addItems pis existingPIs (head itemsToAdd : item : items)
+        addItems pis existingPIs (addUsedPIs chosen : (item, usedPIs) : items)
     where
         thisPI = execWriter $ collectPIsM item
-        runner f = execWriter $ collectNestedModuleItemsM f item
-        usedPIs = Set.unions $ map runner
-            [ collectStmtsM collectSubroutinesM
-            , collectTypesM $ collectNestedTypesM collectTypenamesM
-            , collectExprsM $ collectNestedExprsM collectExprIdentsM
-            , collectLHSsM  $ collectNestedLHSsM  collectLHSIdentsM
-            ]
         neededPIs = Set.difference (Set.difference usedPIs existingPIs) thisPI
         itemsToAdd = map MIPackageItem $ Map.elems $
             Map.restrictKeys pis neededPIs
+        chosen = head itemsToAdd
 addItems _ _ [] = []
+
+-- augment a module item with the set of identifiers it uses
+addUsedPIs :: ModuleItem -> (ModuleItem, Idents)
+addUsedPIs item =
+    (item, usedPIs)
+    where
+        usedPIs = execWriter $
+            traverseNestedModuleItemsM (traverseIdentsM writeIdent) item
+        writeIdent :: Identifier -> Writer Idents Identifier
+        writeIdent x = tell (Set.singleton x) >> return x
 
 -- writes down the names of package items
 collectPIsM :: ModuleItem -> Writer Idents ()
@@ -98,28 +102,66 @@ collectPIsM (MIPackageItem item) =
         ident -> tell $ Set.singleton ident
 collectPIsM _ = return ()
 
--- writes down the names of subroutine invocations
-collectSubroutinesM :: Stmt -> Writer Idents ()
-collectSubroutinesM (Subroutine (Ident f) _) = tell $ Set.singleton f
-collectSubroutinesM _ = return ()
+-- visits all identifiers in a module item
+traverseIdentsM :: Monad m => MapperM m Identifier -> MapperM m ModuleItem
+traverseIdentsM identMapper = traverseNodesM
+    (traverseExprIdentsM identMapper)
+    (traverseDeclIdentsM identMapper)
+    (traverseTypeIdentsM identMapper)
+    (traverseLHSIdentsM  identMapper)
+    (traverseStmtIdentsM identMapper)
 
--- writes down the names of function calls and identifiers
-collectExprIdentsM :: Expr -> Writer Idents ()
-collectExprIdentsM (Call (Ident x) _) = tell $ Set.singleton x
-collectExprIdentsM (Ident x)          = tell $ Set.singleton x
-collectExprIdentsM _ = return ()
+-- visits all identifiers in an expression
+traverseExprIdentsM :: Monad m => MapperM m Identifier -> MapperM m Expr
+traverseExprIdentsM identMapper = fullMapper
+    where
+        fullMapper = exprMapper >=> traverseSinglyNestedExprsM fullMapper
+        exprMapper (Call (Ident x) args) =
+            identMapper x >>= \x' -> return $ Call (Ident x') args
+        exprMapper (Ident x) = identMapper x >>= return . Ident
+        exprMapper other = return other
 
--- writes down the names of identifiers
-collectLHSIdentsM :: LHS -> Writer Idents ()
-collectLHSIdentsM (LHSIdent x) = tell $ Set.singleton x
-collectLHSIdentsM _ = return ()
+-- visits all identifiers in a type
+traverseTypeIdentsM :: Monad m => MapperM m Identifier -> MapperM m Type
+traverseTypeIdentsM identMapper = fullMapper
+    where
+        fullMapper = typeMapper
+            >=> traverseTypeExprsM (traverseExprIdentsM identMapper)
+            >=> traverseSinglyNestedTypesM fullMapper
+        typeMapper (Alias       x t) = aliasHelper (Alias      ) x t
+        typeMapper (PSAlias p   x t) = aliasHelper (PSAlias p  ) x t
+        typeMapper (CSAlias c p x t) = aliasHelper (CSAlias c p) x t
+        typeMapper other = return other
+        aliasHelper constructor x t =
+            identMapper x >>= \x' -> return $ constructor x' t
 
--- writes down aliased typenames
-collectTypenamesM :: Type -> Writer Idents ()
-collectTypenamesM (Alias       x _) = tell $ Set.singleton x
-collectTypenamesM (PSAlias _   x _) = tell $ Set.singleton x
-collectTypenamesM (CSAlias _ _ x _) = tell $ Set.singleton x
-collectTypenamesM _ = return ()
+-- visits all identifiers in an LHS
+traverseLHSIdentsM :: Monad m => MapperM m Identifier -> MapperM m LHS
+traverseLHSIdentsM identMapper = fullMapper
+    where
+        fullMapper = lhsMapper
+            >=> traverseLHSExprsM (traverseExprIdentsM identMapper)
+            >=> traverseSinglyNestedLHSsM fullMapper
+        lhsMapper (LHSIdent x) = identMapper x >>= return . LHSIdent
+        lhsMapper other = return other
+
+-- visits all identifiers in a statement
+traverseStmtIdentsM :: Monad m => MapperM m Identifier -> MapperM m Stmt
+traverseStmtIdentsM identMapper = fullMapper
+    where
+        fullMapper = stmtMapper
+            >=> traverseStmtExprsM (traverseExprIdentsM identMapper)
+            >=> traverseStmtLHSsM  (traverseLHSIdentsM  identMapper)
+            >=> traverseSinglyNestedStmtsM fullMapper
+        stmtMapper (Subroutine (Ident x) args) =
+            identMapper x >>= \x' -> return $ Subroutine (Ident x') args
+        stmtMapper other = return other
+
+-- visits all identifiers in a declaration
+traverseDeclIdentsM :: Monad m => MapperM m Identifier -> MapperM m Decl
+traverseDeclIdentsM identMapper =
+    traverseDeclExprsM (traverseExprIdentsM identMapper) >=>
+    traverseDeclTypesM (traverseTypeIdentsM identMapper)
 
 -- returns the "name" of a package item, if it has one
 piName :: PackageItem -> Identifier

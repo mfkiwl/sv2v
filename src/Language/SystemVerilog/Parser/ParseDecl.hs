@@ -41,7 +41,6 @@ module Language.SystemVerilog.Parser.ParseDecl
 , parseDTsAsPortDecls
 , parseDTsAsModuleItems
 , parseDTsAsDecls
-, parseDTsAsDecl
 , parseDTsAsDeclOrStmt
 , parseDTsAsDeclsOrAsgns
 ) where
@@ -70,6 +69,7 @@ data DeclToken
     | DTDot      Position Identifier
     | DTSigning  Position Signing
     | DTLifetime Position Lifetime
+    | DTAttr     Position Attr
     deriving (Show, Eq)
 
 -- entrypoints besides `parseDTsAsDeclOrStmt` use this to disallow `DTAsgn` with
@@ -94,7 +94,7 @@ parseDTsAsPortDecls pieces =
     forbidNonEqAsgn pieces $
     if isSimpleList
         then (simpleIdents, [])
-        else (portNames declarations, map (MIPackageItem . Decl) declarations)
+        else (portNames declarations, applyAttrs [] pieces declarations)
     where
         commaIdxs = findIndices isComma pieces
         identIdxs = findIndices isIdent pieces
@@ -105,9 +105,14 @@ parseDTsAsPortDecls pieces =
             length pieces == length commaIdxs + length identIdxs
 
         simpleIdents = map extractIdent $ filter isIdent pieces
-        declarations = propagateDirections Input $ parseDTsAsDecls pieces
+        declarations = propagateDirections Input $ parseDTsAsDecls pieces'
 
         extractIdent = \(DTIdent _ x) -> x
+
+        pieces' = filter (not . isDTAttr) pieces
+        isDTAttr :: DeclToken -> Bool
+        isDTAttr DTAttr{} = True
+        isDTAttr _ = False
 
         propagateDirections :: Direction -> [Decl] -> [Decl]
         propagateDirections dir (decl @ (Variable _ InterfaceT{} _ _ _) : decls) =
@@ -128,6 +133,23 @@ parseDTsAsPortDecls pieces =
         portName CommentDecl{} = ""
         portName decl =
             error $ "unexpected non-variable port declaration: " ++ (show decl)
+
+        applyAttrs :: [Attr] -> [DeclToken] -> [Decl] -> [ModuleItem]
+        applyAttrs _ [] [] = []
+        applyAttrs _ tokens (CommentDecl c : decls) =
+            MIPackageItem (Decl $ CommentDecl c) : applyAttrs [] tokens decls
+        applyAttrs attrs (DTAttr _ attr : tokens) decls =
+            applyAttrs (attr : attrs) tokens decls
+        applyAttrs attrs [] [decl] =
+            [wrapDecl attrs decl]
+        applyAttrs attrs (DTComma{} : tokens) (decl : decls) =
+            wrapDecl attrs decl : applyAttrs attrs tokens decls
+        applyAttrs attrs (_ : tokens) decls =
+            applyAttrs attrs tokens decls
+        applyAttrs _ [] _ = error "applyAttrs internal invariant failed"
+
+        wrapDecl :: [Attr] -> Decl -> ModuleItem
+        wrapDecl attrs decl = foldr MIAttr (MIPackageItem $ Decl decl) attrs
 
 
 -- [PUBLIC]: parser for single (semicolon-terminated) declarations (including
@@ -225,16 +247,10 @@ parseDTsAsDecl tokens =
 -- [PUBLIC]: parser for single block item declarations or assign or arg-less
 -- subroutine call statements
 parseDTsAsDeclOrStmt :: [DeclToken] -> ([Decl], [Stmt])
-parseDTsAsDeclOrStmt [DTIdent pos f] =
-    ([], [traceStmt pos, Subroutine (Ident f) (Args [] [])])
-parseDTsAsDeclOrStmt [DTPSIdent pos ps f] =
-    ([], [traceStmt pos, Subroutine (PSIdent ps f) (Args [] [])])
-parseDTsAsDeclOrStmt [DTCSIdent pos ps pm f] =
-    ([], [traceStmt pos, Subroutine (CSIdent ps pm f) (Args [] [])])
 parseDTsAsDeclOrStmt (DTAsgn pos (AsgnOp op) mt e : tok : toks) =
     parseDTsAsDeclOrStmt $ (tok : toks) ++ [DTAsgn pos (AsgnOp op) mt e]
 parseDTsAsDeclOrStmt tokens =
-    if (isStmt (last tokens) || tripLookahead tokens) && maybeLhs /= Nothing
+    if not hasLeadingDecl
         then ([], [traceStmt pos, stmt])
         else (parseDTsAsDecl tokens, [])
     where
@@ -242,13 +258,15 @@ parseDTsAsDeclOrStmt tokens =
         stmt = case last tokens of
             DTAsgn  _ op mt e -> Asgn op mt lhs e
             DTInstance _ args -> Subroutine (lhsToExpr lhs) (instanceToArgs args)
-            _ -> error $ "invalid block item decl or stmt: " ++ (show tokens)
-        maybeLhs = takeLHS $ init tokens
-        Just lhs = maybeLhs
-        isStmt :: DeclToken -> Bool
-        isStmt (DTAsgn{}) = True
-        isStmt (DTInstance{}) = True
-        isStmt _ = False
+            _ -> case takeLHS tokens of
+                Just fullLHS -> Subroutine (lhsToExpr fullLHS) (Args [] [])
+                _ -> error $ "invalid block item decl or stmt: " ++ show tokens
+        Just lhs = takeLHS $ init tokens
+        hasLeadingDecl = tokens /= l4 && tripLookahead l4
+        (_, l1) = takeDir      tokens
+        (_, l2) = takeLifetime l1
+        (_, l3) = takeType     l2
+        (_, l4) = takeRanges   l3
 
 traceStmt :: Position -> Stmt
 traceStmt pos = CommentStmt $ "Trace: " ++ show pos
@@ -499,3 +517,4 @@ tokPos (DTStream   p _ _ _) = p
 tokPos (DTDot      p _) = p
 tokPos (DTSigning  p _) = p
 tokPos (DTLifetime p _) = p
+tokPos (DTAttr     p _) = p
